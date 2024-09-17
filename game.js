@@ -58,7 +58,7 @@ const SHIP_LENS = [2, 3]
 const SHIP_COLORS = [PS.COLOR_GRAY, PS.COLOR_GRAY, PS.COLOR_GRAY,
 PS.COLOR_GRAY, PS.COLOR_GRAY, PS.COLOR_GRAY,
 PS.COLOR_GRAY] // ship colors
-const SHIP_HIT_COLOR = PS.COLOR_ORANGE; 
+const SHIP_HIT_COLOR = PS.COLOR_ORANGE;
 const SHIP_SUNK_COLOR = PS.COLOR_RED;
 const DEF_STATUS_TEXT = "battleship game";
 
@@ -233,10 +233,10 @@ class Ship {
 	}
 
 	hit(x, y) {
-		if (this.isVertical){
+		if (this.isVertical) {
 			let dy = Math.abs(this.y - y);
 			this.isHit[dy] = true;
-		} else { 
+		} else {
 			let dx = Math.abs(this.x - x);
 			this.isHit[dx] = true;
 		}
@@ -315,7 +315,7 @@ let game = {
 	opponentPlayer: playerB,
 	curData: beadDataA,
 	opponentData: beadDataB,
-	submitCnt : 0
+	submitCnt: 0
 }
 
 
@@ -434,7 +434,7 @@ function sleep(ms) {
 	while (new Date().getTime() < st + ms) { }
 }
 
-function debugValidate(){
+function debugValidate() {
 	// go through every block to assure that curData's ship's sideName is 
 	// no the same as opponentData's ship
 	for (let i = 0; i < GAME_GRID_X_SZ; i++) {
@@ -507,6 +507,7 @@ let handleCtrlOption = function (x, y) {
 		}
 	} else if (x == CTRL_OPTIONS.SUBMIT.x) {
 		game.submitCnt++;
+		let doRefresh = true;
 		if (game.state == GAME_STATE.A_PLACING) {
 			flipSide(true)
 		} else if (game.state == GAME_STATE.B_PLACING) {
@@ -520,14 +521,31 @@ let handleCtrlOption = function (x, y) {
 			if (game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].state === BEAD_STATE.OCCUPIED) {
 				let hittenOpponentShip = game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].occupiedBy;
 				hittenOpponentShip.hit(curSelectedBombPos.x, curSelectedBombPos.y);
-				hittenOpponentShip.draw();
+				if (hittenOpponentShip.isSunk) {
+					for (let bead of hittenOpponentShip.getOccupiedBeads()) {
+						PS.borderColor(bead.x, bead.y, SHIP_SUNK_COLOR);
+						PS.color(bead.x, bead.y, SHIP_SUNK_COLOR);
+					}
+				} else
+					for (let bead of hittenOpponentShip.getOccupiedBeads()) {
+						if (game.opponentData[bead.x][bead.y].state === BEAD_STATE.HIT) {
+							PS.color(bead.x, bead.y, SHIP_HIT_COLOR);
+						}
+					}
+				doRefresh = false;
+				// do a timer that wait for 30 ticks then refresh. 
+				let tid = PS.timerStart(60, function () {
+					refreshGameGrid();
+					PS.timerStop(tid);
+				});
 			} else {
 				game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].state = BEAD_STATE.BOMBED;
 			}
 			checkGameEnd();
 			flipSide(false);
 		}
-		refreshGameGrid();
+		if (doRefresh)
+			refreshGameGrid();
 	}
 }
 
@@ -557,7 +575,7 @@ let refreshGameGrid = function () {
 		for (let s of game.opponentPlayer.ships) {
 			if (s.isSunk) {
 				s.draw();
-			}	
+			}
 		}
 	}
 }
@@ -577,7 +595,7 @@ let handleSelectAttack = function (x, y) {
 		}
 	PS.color(x, y, getContrastingColor(DEF_BEAD.color));
 	curSelectedBombPos = { x: x, y: y };
-}	
+}
 
 
 // ----------------- PS funcs -----------------
@@ -656,7 +674,7 @@ PS.keyDown = function (key, shift, ctrl, options) {
 		case 'e'.charCodeAt(0):
 			handleCtrlOption(CTRL_OPTIONS.ROTATE_CW.x, CTRL_PANEL_ROW);
 			break;
-		case PS.KEY_ENTER: 
+		case PS.KEY_ENTER:
 			handleCtrlOption(CTRL_OPTIONS.SUBMIT.x, CTRL_PANEL_ROW);
 			break;
 	}
