@@ -114,10 +114,10 @@ class Ship {
 		this.isVertical = isVertical;
 		this.color = color
 		this.selectedColor = getContrastingColor(color);
-		this.isSelected = false;
 		this.isHit = new Array(len).fill(false); // idx 0 is the center
 		this.isSunk = false;
 		this.sideName = sideName;
+		this.isSelected = false;
 	}
 
 	getOccupiedBeads() {
@@ -157,10 +157,19 @@ class Ship {
 	draw() {
 		let occupiedBeads = this.getOccupiedBeads();
 		PS.glyph(this.x, this.y, "•");
-		for (let bead of occupiedBeads) {
-			PS.color(bead.x, bead.y, this.color);
-			PS.borderColor(bead.x, bead.y, this.color);
-		}
+		occupiedBeads.forEach((bead, idx) => {
+			let c = this.color;
+			if (game.isPlacing) {
+				c = this.isSelected ? this.selectedColor : this.color;
+			} else {
+				c = this.isSunk ? SHIP_SUNK_COLOR : SHIP_HIT_COLOR;
+				// if the current bead is not hit, then continue
+				if (!this.isHit[idx]) 
+					return;
+			}
+			PS.color(bead.x, bead.y, c);
+			PS.borderColor(bead.x, bead.y, c);
+		})
 	}
 
 	updGrid(occNotHit, curNotOppData) {
@@ -173,9 +182,6 @@ class Ship {
 
 	toggleSelect() {
 		this.isSelected = !this.isSelected;
-		let temp = this.color;
-		this.color = this.selectedColor;
-		this.selectedColor = temp;
 	}
 
 	getOccupiedBeadsAfterRotate(isCW) {
@@ -521,17 +527,7 @@ let handleCtrlOption = function (x, y) {
 			if (game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].state === BEAD_STATE.OCCUPIED) {
 				let hittenOpponentShip = game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].occupiedBy;
 				hittenOpponentShip.hit(curSelectedBombPos.x, curSelectedBombPos.y);
-				if (hittenOpponentShip.isSunk) {
-					for (let bead of hittenOpponentShip.getOccupiedBeads()) {
-						PS.borderColor(bead.x, bead.y, SHIP_SUNK_COLOR);
-						PS.color(bead.x, bead.y, SHIP_SUNK_COLOR);
-					}
-				} else
-					for (let bead of hittenOpponentShip.getOccupiedBeads()) {
-						if (game.opponentData[bead.x][bead.y].state === BEAD_STATE.HIT) {
-							PS.color(bead.x, bead.y, SHIP_HIT_COLOR);
-						}
-					}
+				hittenOpponentShip.draw();
 				doRefresh = false;
 				// do a timer that wait for 30 ticks then refresh. 
 				let tid = PS.timerStart(60, function () {
