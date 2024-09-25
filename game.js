@@ -77,6 +77,7 @@ const DEF_CTRL_BEAD = {
 const CCW_ROTATE_GLYPH = "↺";
 const CW_ROTATE_GLYPH = "↻";
 const BOMB_GLYPH = 0x1F4A3; // 💣
+const EXPLOSION_GLYPH = 0x1F4A5; // 💥
 const ANIM_TICK_PER_MOVE = 8;
 const GAME_STATE = Object.freeze({
 	A_PLACING: { side: "A", state: "placing" },
@@ -105,6 +106,32 @@ const CTRL_OPTIONS = Object.freeze({
 });
 
 const MIN_BOMB_TRAVEL_DIS = Math.max(GAME_GRID_X_SZ, GAME_GRID_Y_SZ) / 2;
+const A_GLYPH_MAP_10x10 = [
+	[0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+	[0, 0, 0, 1, 1, 1, 1, 0, 0, 0],
+	[0, 0, 1, 1, 0, 0, 1, 1, 0, 0],
+	[0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+	[0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+	[0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
+	[0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
+	[0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
+	[0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
+	[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+]
+
+const B_GLYPH_MAP_10x10 = [
+	//1  2  3  4  5  6  7  8  9 10
+	[0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+	[0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+	[0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
+	[0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
+	[0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+	[0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+	[0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
+	[0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
+	[0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+	[0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+]
 
 // ----------------- classes -----------------
 class Ship {
@@ -167,7 +194,7 @@ class Ship {
 			} else {
 				c = this.isSunk ? SHIP_SUNK_COLOR : SHIP_HIT_COLOR;
 				// if the current bead is not hit, then continue
-				if (!this.isHit[idx]) 
+				if (!this.isHit[idx])
 					return;
 			}
 			PS.color(bead.x, bead.y, c);
@@ -302,8 +329,8 @@ class Debug {
 	}
 }
 
-class BeadDisp{
-	constructor(borderColor, color, glyph){
+class BeadDisp {
+	constructor(borderColor, color, glyph) {
 		this.borderColor = borderColor;
 		this.color = color;
 		this.glyph = glyph;
@@ -311,13 +338,13 @@ class BeadDisp{
 }
 
 class Frame {
-	constructor(beadDispsMap){
+	constructor(beadDispsMap) {
 		this.beadDispsMap = beadDispsMap;
 		this.origBeadDispMap = new Map(beadDispsMap);
 	}
 
-	playFrame(){	
-		for (let [k, v] of this.beadDispsMap.entries()){
+	playFrame() {
+		for (let [k, v] of this.beadDispsMap.entries()) {
 			let [x, y] = JSON.parse(k);
 			console.assert(insideGameGrid(x, y), "frame content out of grid");
 			let beadDisp = v;
@@ -334,7 +361,7 @@ class Frame {
 		}
 	}
 
-	restoreFrame(){
+	restoreFrame() {
 		let tmp = this.beadDispsMap;
 		this.beadDispsMap = this.origBeadDispMap;
 		this.origBeadDispMap = tmp;
@@ -343,34 +370,41 @@ class Frame {
 
 }
 
-class Animation{
-	constructor(){
+class Animation {
+	constructor() {
 		this.frameOrFuncs = [];
+		this.isFrameAccum = [];
 		this.tickPerFrame = [];
 		this.curFrameOrFuncIdx = 0;
 		this.isStopped = true;
 	}
 
-	push(FrameOrFunc, tickPerFrame){
-		this.frameOrFuncs.push(FrameOrFunc);
-		tickPerFrame = typeof FrameOrFunc === "function" ? -1 : tickPerFrame;
+	push(frameOrFunc, tickPerFrame, accum = false) {
+		this.frameOrFuncs.push(frameOrFunc);
+		tickPerFrame = typeof frameOrFunc === "function" ? -1 : tickPerFrame;
 		this.tickPerFrame.push(tickPerFrame);
+		this.isFrameAccum.push(accum);
 	}
 
-	pushDeactivateUserInput(){
-		this.push(()=>{
+	pushDelay(tick) {
+		let emptyFrame = new Frame(new Map());
+		this.push(emptyFrame, tick);
+	}
+
+	pushDeactivateUserInput() {
+		this.push(() => {
 			game.userInputActivated = false;
 		}, 1);
 	}
 
-	pushActivateUserInput(){
-		this.push(()=>{
+	pushActivateUserInput() {
+		this.push(() => {
 			if (game.state !== GAME_STATE.END)
 				game.userInputActivated = true;
 		}, 1);
 	}
 
-	play(){
+	play() {
 		this.isStopped = false;
 		let curTick = 0
 		let lstPlayedTick = 0;
@@ -379,7 +413,7 @@ class Animation{
 		let prevPlayedFrame = placeHolderFrame;
 		let curFFIdx = 1;
 		let tid = PS.timerStart(1, () => {
-			curTick++;	
+			curTick++;
 			if (this.isStopped) {
 				PS.timerStop(tid);
 				return;
@@ -392,7 +426,8 @@ class Animation{
 			} else if (tksFromLst >= this.tickPerFrame[this.curFrameOrFuncIdx]) {
 				curFF.playFrame();
 				lstPlayedTick = curTick;
-				prevPlayedFrame.restoreFrame();
+				if (!this.isFrameAccum[this.curFrameOrFuncIdx])
+					prevPlayedFrame.restoreFrame();
 				prevPlayedFrame = curFF;
 				curFFIdx++;
 			}
@@ -403,7 +438,7 @@ class Animation{
 		});
 	}
 
-	stop(){
+	stop() {
 		this.isStopped = true;
 	}
 }
@@ -411,30 +446,39 @@ class Animation{
 
 // ----------------- global variables -----------------
 
-let curSelectedShip = null;
-let curSelectedBombPos = null;
-let playerA = new Player("A", getInitShips("A"));
-let playerB = new Player("B", getInitShips("B"));
-let beadDataA = new Array(GAME_GRID_X_SZ).fill(null)
+var curSelectedShip = null;
+var curSelectedBombPos = null;
+var playerA = new Player("A", getInitShips("A"));
+var playerB = new Player("B", getInitShips("B"));
+var beadDataA = new Array(GAME_GRID_X_SZ).fill(null)
 	.map(() => new Array(GAME_GRID_Y_SZ).fill(null)
 		.map(() => new BeadData(BEAD_STATE.EMPTY, null)));
 
 
-let beadDataB = new Array(GAME_GRID_X_SZ).fill(null)
+var beadDataB = new Array(GAME_GRID_X_SZ).fill(null)
 	.map(() => new Array(GAME_GRID_Y_SZ).fill(null)
 		.map(() => new BeadData(BEAD_STATE.EMPTY, null)));
 
-let game = {
+var game = {
 	state: GAME_STATE.A_PLACING,
 	isPlacing: true,
 	curPlayer: playerA,
 	opponentPlayer: playerB,
 	curData: beadDataA,
 	opponentData: beadDataB,
-	submitCnt: 0, 
+	submitCnt: 0,
 	userInputActivated: true
 }
 
+var isWaitingSwitchSide = false;
+var gridBeforeSwitchSide = new Array(GAME_GRID_X_SZ).fill(null)
+	.map(() => new Array(GAME_GRID_Y_SZ).fill(null));
+
+var placingWithShipResponsiveCtrlOptions = [CTRL_OPTIONS.ROTATE_CW, CTRL_OPTIONS.ROTATE_CCW, CTRL_OPTIONS.MOV_LEFT,
+CTRL_OPTIONS.MOV_RIGHT, CTRL_OPTIONS.MOV_UP, CTRL_OPTIONS.MOV_DOWN, CTRL_OPTIONS.SUBMIT];
+var placingWithoutShipResponsiveCtrlOptions = [CTRL_OPTIONS.SUBMIT];
+var attackingResponsiveCtrlOptions = [CTRL_OPTIONS.SUBMIT];
+var fx_heng = new Audio("./assets/sound/fx_heng.mp3");
 
 // ----------------- util https://chatgpt.com/c/66e24548-8cf8-8006-8aae-2d708117282cfunctions -----------------
 
@@ -513,6 +557,21 @@ function flipSide(stillPlacing) {
 	PS.glyph(CTRL_OPTIONS.CUR_PLAYER.x, CTRL_PANEL_ROW, game.curPlayer.sideName);
 	curSelectedBombPos = null;
 	curSelectedShip = null;
+	let curWaitGlyph = game.curPlayer.sideName == "A" ? A_GLYPH_MAP_10x10 : B_GLYPH_MAP_10x10;
+	for (let i = 0; i < GAME_GRID_X_SZ; i++) {
+		for (let j = 0; j < GAME_GRID_Y_SZ; j++) {
+			gridBeforeSwitchSide[i][j] = new BeadDisp(PS.borderColor(i, j), PS.color(i, j), PS.glyph(i, j));
+			PS.glyph(i, j, "");
+			PS.color(i, j, PS.COLOR_WHITE);
+			PS.borderColor(i, j, PS.COLOR_WHITE);
+			if (i < 10 && j < 10 && curWaitGlyph[j][i] == 1) {
+				PS.color(i, j, PS.COLOR_BLACK);
+				PS.borderColor(i, j, PS.COLOR_BLACK);
+				PS.glyph(i, j, "");
+			}
+		}
+	}
+	isWaitingSwitchSide = true;
 }
 
 function drawDefBead(x, y) {
@@ -575,26 +634,59 @@ function getRandPathFromEdgeGreaterThanDis(dst, dis = MIN_BOMB_TRAVEL_DIS) {
 	return ret;
 }
 
-function getBombingAnim(dst, dis = MIN_BOMB_TRAVEL_DIS){
+function getBombingAnim(dst, dis = MIN_BOMB_TRAVEL_DIS) {
 	let path = getRandPathFromEdgeGreaterThanDis(dst, dis);
 	PS.debug("path start by: " + path[0] + "\n");
 	let anim = new Animation();
 	anim.pushDeactivateUserInput();
-	for (let p of path){
+	for (let p of path) {
 		anim.push(new Frame(toMapCompByVal(new Map([[p, new BeadDisp(null, null, BOMB_GLYPH)]])))
-									, ANIM_TICK_PER_MOVE);
+			, ANIM_TICK_PER_MOVE);
 	}
-	anim.push(refreshGameGrid, -1);
-	anim.pushActivateUserInput();
+	/* 
+	explostion frames, X is the hit point
+					  *
+		*          ***        *
+	   *x*  -->   **X**  --> *X*
+		*          ***        *
+					*
+	*/
+	let expFrame1Shifts = [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]];
+	let expFrame2Shifts = expFrame1Shifts.concat([
+		[-1, -1], [1, 1], [-1, 1], [1, -1], [0, 2], [0, -2], [2, 0], [-2, 0]
+	]);
+	PS.debug("frame2 shifts: " + expFrame2Shifts + "\n");
+	let expFrame1Map = new Map();
+	for (let [dx, dy] of expFrame1Shifts) {
+		let [x, y] = [dst.x + dx, dst.y + dy];
+		if (insideGameGrid(x, y))
+			expFrame1Map.set(JSON.stringify([x, y]), new BeadDisp(null, null, EXPLOSION_GLYPH));
+	}
+	let expFrame2Map = new Map();
+	for (let [dx, dy] of expFrame2Shifts) {
+		let [x, y] = [dst.x + dx, dst.y + dy];
+		if (insideGameGrid(x, y))
+			expFrame2Map.set(JSON.stringify([x, y]), new BeadDisp(null, null, EXPLOSION_GLYPH));
+	}
+	anim.push(() => {fx_heng.play();});
+	anim.push(new Frame(expFrame1Map), ANIM_TICK_PER_MOVE * 2);
+	anim.push(new Frame(expFrame2Map), ANIM_TICK_PER_MOVE * 2, true);
+	anim.push(new Frame(expFrame1Map), ANIM_TICK_PER_MOVE * 2);
+	anim.pushDelay(secToTick(0.2));
 	return anim;
 }
 
-function toMapCompByVal(map){
+function toMapCompByVal(map) {
 	let ret = new Map();
-	for (let [k, v] of map){
+	for (let [k, v] of map) {
 		ret.set(JSON.stringify(k), v);
 	}
 	return ret;
+}
+
+function secToTick(sec) {
+	// 60 tick -> 1 sec
+	return sec * 60;
 }
 
 function debugValidate() {
@@ -613,11 +705,20 @@ function debugValidate() {
 	}
 }
 
+function toggleBgGlyphColor(x, y) {
+	// toggle the color between the glyph and the background
+	let glyphColor = PS.glyphColor(x, y);
+	let bgColor = PS.color(x, y);
+	PS.glyphColor(x, y, bgColor);
+	PS.color(x, y, glyphColor);
+}
+
 // ----------------- event handlers -----------------
 
 let handleShipSelect = function (x, y) {
 	let data = game.curData[x][y];
 	if (data.state === BEAD_STATE.OCCUPIED) {
+		PS.audioPlay("fx_click");
 		let ship = data.occupiedBy;
 		if (curSelectedShip !== null) {
 			// deselect the current selected ship
@@ -651,6 +752,7 @@ let checkGameEnd = function () {
 }
 
 let handleCtrlOption = function (x, y) {
+	PS.audioPlay("fx_click");
 	if (x == CTRL_OPTIONS.ROTATE_CW.x || x == CTRL_OPTIONS.ROTATE_CCW.x) {
 		if (curSelectedShip === null)
 			return
@@ -671,7 +773,6 @@ let handleCtrlOption = function (x, y) {
 		}
 	} else if (x == CTRL_OPTIONS.SUBMIT.x) {
 		game.submitCnt++;
-		let doRefresh = true;
 		if (game.state == GAME_STATE.A_PLACING) {
 			flipSide(true)
 		} else if (game.state == GAME_STATE.B_PLACING) {
@@ -684,18 +785,23 @@ let handleCtrlOption = function (x, y) {
 			// attacking stage
 			if (game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].state === BEAD_STATE.OCCUPIED) {
 				let hittenOpponentShip = game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].occupiedBy;
-				hittenOpponentShip.hit(curSelectedBombPos.x, curSelectedBombPos.y);
-				hittenOpponentShip.draw();
-				doRefresh = false;
-				getBombingAnim(curSelectedBombPos).play();
+				let anim = getBombingAnim(curSelectedBombPos);
+				let [cx, cy] = [curSelectedBombPos.x, curSelectedBombPos.y];
+				anim.push(() => {
+					hittenOpponentShip.hit(cx, cy);
+					hittenOpponentShip.draw();
+				})
+				anim.pushDelay(secToTick(1.5));
+				anim.push(checkGameEnd);
+				anim.push(() => { flipSide(false) });
+				anim.pushActivateUserInput();
+				anim.play();
 			} else {
 				game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].state = BEAD_STATE.BOMBED;
+				checkGameEnd();
+				flipSide(false);
 			}
-			checkGameEnd();
-			flipSide(false);
 		}
-		if (doRefresh)
-			refreshGameGrid();
 	}
 }
 
@@ -746,12 +852,27 @@ let handleSelectAttack = function (x, y) {
 	curSelectedBombPos = { x: x, y: y };
 }
 
+let checkWaitingSwitchSide = function () {
+	PS.debug("isWaitingSwitchSide: " + isWaitingSwitchSide + "\n");
+	if (isWaitingSwitchSide) {
+		for (let i = 0; i < GAME_GRID_X_SZ; i++) {
+			for (let j = 0; j < GAME_GRID_Y_SZ; j++) {
+				let beadDisp = gridBeforeSwitchSide[i][j];
+				PS.color(i, j, beadDisp.color);
+				PS.borderColor(i, j, beadDisp.borderColor);
+				PS.glyph(i, j, beadDisp.glyph);
+			}
+		}
+		isWaitingSwitchSide = false;
+		refreshGameGrid();
+	}
+}
+
 
 // ----------------- PS funcs -----------------
 
 
 PS.init = function (system, options) {
-
 	PS.gridSize(GAME_GRID_X_SZ, GAME_GRID_Y_SZ + 1);
 	for (let i = 0; i < GAME_GRID_X_SZ; i++) {
 		PS.color(i, CTRL_PANEL_ROW, DEF_CTRL_BEAD.color);
@@ -764,12 +885,13 @@ PS.init = function (system, options) {
 	}
 	refreshGameGrid();
 	PS.statusText("battleship game");
+	PS.audioLoad("fx_click");
 }
 
 PS.touch = function (x, y, data, options) {
-	PS.debug("userinput activated: " + game.userInputActivated + "\n");	
+	PS.debug("userinput activated: " + game.userInputActivated + "\n");
 	if (!game.userInputActivated) return;
-
+	checkWaitingSwitchSide();
 	if (y != CTRL_PANEL_ROW && game.isPlacing)
 		handleShipSelect(x, y);
 	else if (y != CTRL_PANEL_ROW && !game.isPlacing)
@@ -782,18 +904,28 @@ PS.release = function (x, y, data, options) {
 };
 
 
-PS.enter = function (x, y, data, options) {
-};
 
 
 PS.exit = function (x, y, data, options) {
-	// Uncomment the following code line to inspect x/y parameters:
+	if (!game.userInputActivated) return;
+	if (y != CTRL_PANEL_ROW) return;
+	if (game.isPlacing) {
+		if (curSelectedShip != null
+			&& placingWithShipResponsiveCtrlOptions.map(opt => opt.x).includes(x)) {
+			toggleBgGlyphColor(x, y);
+		}
+		if (curSelectedShip == null
+			&& placingWithoutShipResponsiveCtrlOptions.map(opt => opt.x).includes(x)) {
+			toggleBgGlyphColor(x, y);
+		}
+	} else {
+		if (attackingResponsiveCtrlOptions.map(opt => opt.x).includes(x)) {
+			toggleBgGlyphColor(x, y);
+		}
+	}
+}
 
-	// PS.debug( "PS.exit() @ " + x + ", " + y + "\n" );
-
-	// Add code here for when the mouse cursor/touch exits a bead.
-};
-
+PS.enter = PS.exit;
 
 PS.exitGrid = function (options) {
 	// Uncomment the following code line to verify operation:
@@ -805,6 +937,7 @@ PS.exitGrid = function (options) {
 
 PS.keyDown = function (key, shift, ctrl, options) {
 	if (!game.userInputActivated) return;
+	if (isWaitingSwitchSide) return;
 	switch (key) {
 		case 'w'.charCodeAt(0):
 			handleCtrlOption(CTRL_OPTIONS.MOV_UP.x, CTRL_PANEL_ROW);
