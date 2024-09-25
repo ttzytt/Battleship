@@ -54,7 +54,7 @@ const GAME_GRID_X_SZ = 12 // grid size x
 const GAME_GRID_Y_SZ = 12 // grid size y
 const CTRL_PANEL_ROW = GAME_GRID_Y_SZ;
 // const SHIP_LENS = [2, 2, 3, 3, 4, 4, 5] // ship lengths
-const SHIP_LENS = [2, 3]
+const SHIP_LENS = [2]
 const SHIP_COLORS = [PS.COLOR_GRAY, PS.COLOR_GRAY, PS.COLOR_GRAY,
 PS.COLOR_GRAY, PS.COLOR_GRAY, PS.COLOR_GRAY,
 PS.COLOR_GRAY] // ship colors
@@ -76,6 +76,8 @@ const DEF_CTRL_BEAD = {
 
 const CCW_ROTATE_GLYPH = "↺";
 const CW_ROTATE_GLYPH = "↻";
+const BOMB_GLYPH = 0x1F4A3; // 💣
+const ANIM_TICK_PER_MOVE = 8;
 const GAME_STATE = Object.freeze({
 	A_PLACING: { side: "A", state: "placing" },
 	B_PLACING: { side: "B", state: "placing" },
@@ -102,6 +104,7 @@ const CTRL_OPTIONS = Object.freeze({
 	CUR_PLAYER: { option: "cur_player", glyph: "A", x: 6 },
 });
 
+const MIN_BOMB_TRAVEL_DIS = Math.max(GAME_GRID_X_SZ, GAME_GRID_Y_SZ) / 2;
 
 // ----------------- classes -----------------
 class Ship {
@@ -299,6 +302,113 @@ class Debug {
 	}
 }
 
+class BeadDisp{
+	constructor(borderColor, color, glyph){
+		this.borderColor = borderColor;
+		this.color = color;
+		this.glyph = glyph;
+	}
+}
+
+class Frame {
+	constructor(beadDispsMap){
+		this.beadDispsMap = beadDispsMap;
+		this.origBeadDispMap = new Map(beadDispsMap);
+	}
+
+	playFrame(){	
+		for (let [k, v] of this.beadDispsMap.entries()){
+			let [x, y] = JSON.parse(k);
+			console.assert(insideGameGrid(x, y), "frame content out of grid");
+			let beadDisp = v;
+			console.assert(beadDisp != null, "beadDisp is null");
+			this.origBeadDispMap.set(JSON.stringify([x, y]),
+				new BeadDisp(PS.borderColor(x, y), PS.color(x, y), PS.glyph(x, y)));
+			drawDefBead(x, y);
+			if (beadDisp.color != null)
+				PS.color(x, y, beadDisp.color);
+			if (beadDisp.borderColor != null)
+				PS.borderColor(x, y, beadDisp.borderColor);
+			if (beadDisp.glyph != null)
+				PS.glyph(x, y, beadDisp.glyph);
+		}
+	}
+
+	restoreFrame(){
+		let tmp = this.beadDispsMap;
+		this.beadDispsMap = this.origBeadDispMap;
+		this.origBeadDispMap = tmp;
+		this.playFrame();
+	}
+
+}
+
+class Animation{
+	constructor(){
+		this.frameOrFuncs = [];
+		this.tickPerFrame = [];
+		this.curFrameOrFuncIdx = 0;
+		this.isStopped = true;
+	}
+
+	push(FrameOrFunc, tickPerFrame){
+		this.frameOrFuncs.push(FrameOrFunc);
+		tickPerFrame = typeof FrameOrFunc === "function" ? -1 : tickPerFrame;
+		this.tickPerFrame.push(tickPerFrame);
+	}
+
+	pushDeactivateUserInput(){
+		this.push(()=>{
+			game.userInputActivated = false;
+		}, 1);
+	}
+
+	pushActivateUserInput(){
+		this.push(()=>{
+			if (game.state !== GAME_STATE.END)
+				game.userInputActivated = true;
+		}, 1);
+	}
+
+	play(){
+		this.isStopped = false;
+		let curTick = 0
+		let lstPlayedTick = 0;
+		let placeHolderFrame = new Frame(new Map());
+		let ffs = [placeHolderFrame, ...this.frameOrFuncs];
+		let prevPlayedFrame = placeHolderFrame;
+		let curFFIdx = 1;
+		let tid = PS.timerStart(1, () => {
+			curTick++;	
+			if (this.isStopped) {
+				PS.timerStop(tid);
+				return;
+			}
+			let curFF = ffs[curFFIdx];
+			let tksFromLst = curTick - lstPlayedTick;
+			if (typeof curFF === "function") {
+				curFF();
+				curFFIdx++;
+			} else if (tksFromLst >= this.tickPerFrame[this.curFrameOrFuncIdx]) {
+				curFF.playFrame();
+				lstPlayedTick = curTick;
+				prevPlayedFrame.restoreFrame();
+				prevPlayedFrame = curFF;
+				curFFIdx++;
+			}
+			this.curFrameOrFuncIdx = curFFIdx - 1;
+			if (this.curFrameOrFuncIdx === this.frameOrFuncs.length) {
+				this.stop();
+			}
+		});
+	}
+
+	stop(){
+		this.isStopped = true;
+	}
+}
+
+
 // ----------------- global variables -----------------
 
 let curSelectedShip = null;
@@ -321,7 +431,8 @@ let game = {
 	opponentPlayer: playerB,
 	curData: beadDataA,
 	opponentData: beadDataB,
-	submitCnt: 0
+	submitCnt: 0, 
+	userInputActivated: true
 }
 
 
@@ -440,6 +551,52 @@ function sleep(ms) {
 	while (new Date().getTime() < st + ms) { }
 }
 
+function getEdgeCoords() {
+	let ret = [];
+	for (let i = 0; i < GAME_GRID_X_SZ; i++) {
+		ret.push({ x: i, y: 0 });
+		ret.push({ x: i, y: GAME_GRID_Y_SZ - 1 });
+	}
+	for (let i = 1; i < GAME_GRID_Y_SZ - 1; i++) {
+		ret.push({ x: 0, y: i });
+		ret.push({ x: GAME_GRID_X_SZ - 1, y: i });
+	}
+	return ret;
+}
+
+function getRandPathFromEdgeGreaterThanDis(dst, dis = MIN_BOMB_TRAVEL_DIS) {
+	let edgeCoords = getEdgeCoords();
+	do {
+		var curSrc = edgeCoords[Math.floor(Math.random() * edgeCoords.length)];
+	} while (Math.abs(curSrc.x - dst.x) + Math.abs(curSrc.y - dst.y) < dis);
+	let ret = [[curSrc.x, curSrc.y]];
+	ret = ret.concat(PS.line(curSrc.x, curSrc.y, dst.x, dst.y));
+	ret = ret.concat([[dst.x, dst.y]]);
+	return ret;
+}
+
+function getBombingAnim(dst, dis = MIN_BOMB_TRAVEL_DIS){
+	let path = getRandPathFromEdgeGreaterThanDis(dst, dis);
+	PS.debug("path start by: " + path[0] + "\n");
+	let anim = new Animation();
+	anim.pushDeactivateUserInput();
+	for (let p of path){
+		anim.push(new Frame(toMapCompByVal(new Map([[p, new BeadDisp(null, null, BOMB_GLYPH)]])))
+									, ANIM_TICK_PER_MOVE);
+	}
+	anim.push(refreshGameGrid, -1);
+	anim.pushActivateUserInput();
+	return anim;
+}
+
+function toMapCompByVal(map){
+	let ret = new Map();
+	for (let [k, v] of map){
+		ret.set(JSON.stringify(k), v);
+	}
+	return ret;
+}
+
 function debugValidate() {
 	// go through every block to assure that curData's ship's sideName is 
 	// no the same as opponentData's ship
@@ -489,6 +646,7 @@ let checkGameEnd = function () {
 	if (isEnd) {
 		PS.statusText(game.curPlayer.sideName + " won!!!");
 		game.state = GAME_STATE.END;
+		game.userInputActivated = false;
 	}
 }
 
@@ -529,11 +687,7 @@ let handleCtrlOption = function (x, y) {
 				hittenOpponentShip.hit(curSelectedBombPos.x, curSelectedBombPos.y);
 				hittenOpponentShip.draw();
 				doRefresh = false;
-				// do a timer that wait for 30 ticks then refresh. 
-				let tid = PS.timerStart(60, function () {
-					refreshGameGrid();
-					PS.timerStop(tid);
-				});
+				getBombingAnim(curSelectedBombPos).play();
 			} else {
 				game.opponentData[curSelectedBombPos.x][curSelectedBombPos.y].state = BEAD_STATE.BOMBED;
 			}
@@ -548,7 +702,6 @@ let handleCtrlOption = function (x, y) {
 
 let refreshGameGrid = function () {
 	PS.debug("submit cnt: " + game.submitCnt + "\n");
-	Debug.printBeadState();
 	for (let i = 0; i < GAME_GRID_X_SZ; i++) {
 		for (let j = 0; j < GAME_GRID_Y_SZ; j++) {
 			drawDefBead(i, j);
@@ -614,7 +767,8 @@ PS.init = function (system, options) {
 }
 
 PS.touch = function (x, y, data, options) {
-	if (game.state == GAME_STATE.END) return;
+	PS.debug("userinput activated: " + game.userInputActivated + "\n");	
+	if (!game.userInputActivated) return;
 
 	if (y != CTRL_PANEL_ROW && game.isPlacing)
 		handleShipSelect(x, y);
@@ -650,7 +804,7 @@ PS.exitGrid = function (options) {
 };
 
 PS.keyDown = function (key, shift, ctrl, options) {
-	if (game.state == GAME_STATE.END) return;
+	if (!game.userInputActivated) return;
 	switch (key) {
 		case 'w'.charCodeAt(0):
 			handleCtrlOption(CTRL_OPTIONS.MOV_UP.x, CTRL_PANEL_ROW);
